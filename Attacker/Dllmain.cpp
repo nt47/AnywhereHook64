@@ -192,11 +192,11 @@ void FillNops(BYTE* address, SIZE_T size) {
 
 
 
-void FixAddressOffset(uintptr_t old_base, uintptr_t new_base)
+void FixAddressOffset(uintptr_t old_base, uintptr_t new_base, size_t remainingBytes)
 {
 
     uintptr_t text_section_start= new_base;
-    size_t text_section_size=35;
+    size_t text_section_size=32+ remainingBytes;
 
 
     if (text_section_start != 0 && text_section_size > 0) {
@@ -210,39 +210,11 @@ void FixAddressOffset(uintptr_t old_base, uintptr_t new_base)
 
 
 extern "C" byte* cpy_entry = NULL; // 原来的代码
+qw __rax = NULL;
 
-
-void AllocOri2(uint64_t* absoluteAddress,size_t remainingBytes)//拷贝一小块内存
-{
-    // 在当前进程中分配新的内存,建议是4的倍数
-    cpy_entry = (byte*)VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    if (cpy_entry == NULL) {
-        return ;
-    }
-
-    int offset = 32 + remainingBytes;
-
-    // 直接从当前进程读取模块镜像,不需要VirtualProtect修改可读
-    memcpy(cpy_entry, (void*)0x004010D0, 32+ remainingBytes);
-
-
-    FixAddressOffset((uintptr_t)0x004010D0, (uintptr_t)cpy_entry);
-
-    // 插入跳转指令
-    //从cpy_entry[35]开始计算
-
-    cpy_entry[offset+0] = 0x48; // mov rax, [targetFunction + hookSize]
-    cpy_entry[offset+1] = 0xB8;
-    *reinterpret_cast<uintptr_t*>(&cpy_entry[offset+2]) = (uintptr_t)absoluteAddress + 22;//push rax & jmp rax
-    cpy_entry[offset + 10] = 0xFF; // jmp rax
-    cpy_entry[offset + 11] = 0xE0;
-}
-
-
-qw rax = NULL;
 
 // 写入 mov qword ptr [address], rax 的函数
-void push_rax(uint8_t* targetAddress, uint64_t *absoluteAddress) {
+void push_rax(uint8_t* targetAddress, uint64_t* absoluteAddress) {
     DWORD oldProtect;
     // 修改页面保护属性，允许写入
     VirtualProtect(targetAddress, 10, PAGE_EXECUTE_READWRITE, &oldProtect);
@@ -276,6 +248,41 @@ void pop_rax(uint8_t* targetAddress, uint64_t* absoluteAddress) {
 }
 
 
+void AllocOri2(uint64_t* absoluteAddress,size_t remainingBytes)//拷贝一小块内存
+{
+    // 在当前进程中分配新的内存,建议是4的倍数
+    cpy_entry = (byte*)VirtualAlloc(NULL, 128, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (cpy_entry == NULL) {
+        return;
+    }
+
+    pop_rax((uint8_t*)cpy_entry, &__rax);//10 bytes
+
+    int offset = 32 + remainingBytes + 10;
+
+    // 直接从当前进程读取模块镜像,不需要VirtualProtect修改可读
+    memcpy(cpy_entry + 10, (void*)0x004010D0, 32 + remainingBytes);
+
+
+    FixAddressOffset((uintptr_t)0x004010D0, (uintptr_t)cpy_entry + 10, remainingBytes);
+
+
+    push_rax((uint8_t*)cpy_entry + offset, &__rax);//10 bytes
+
+    int offset2 = 32 + remainingBytes + 10 + 10;
+
+
+    // 插入跳转指令
+    //从cpy_entry[35]开始计算
+
+    cpy_entry[offset2 + 0] = 0x48; // mov rax, [targetFunction + hookSize]
+    cpy_entry[offset2 + 1] = 0xB8;
+    *reinterpret_cast<uintptr_t*>(&cpy_entry[offset2 + 2]) = (uintptr_t)absoluteAddress + 22;//push rax & jmp rax
+    cpy_entry[offset2 + 10] = 0xFF; // jmp rax
+    cpy_entry[offset2 + 11] = 0xE0;
+}
+
+
 
 void InstallHook(size_t remainingBytes) {// 改变寄存器
 
@@ -283,7 +290,7 @@ void InstallHook(size_t remainingBytes) {// 改变寄存器
     //AllocOri((uint64_t*)0x004010D0);
     AllocOri2((uint64_t*)0x004010D0,remainingBytes);
 
-    push_rax((uint8_t*)0x004010D0, &rax);//10 bytes
+    push_rax((uint8_t*)0x004010D0, &__rax);//10 bytes
 
 
     // 找到目标函数地址（示例地址，需要替换为实际地址）
@@ -308,7 +315,7 @@ void InstallHook(size_t remainingBytes) {// 改变寄存器
     // 恢复原来的保护状态
     VirtualProtect(targetFunction, hookSize, oldProtect, &oldProtect);
 
-    pop_rax((uint8_t*)0x004010D0 + 10 + 12, &rax);//10 bytes
+    pop_rax((uint8_t*)0x004010D0 + 10 + 12, &__rax);//10 bytes
 
     FillNops((byte*)0x004010D0 + 10 + 12 + 10, remainingBytes); //size=尾地址-首地址=35
 }
